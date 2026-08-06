@@ -4,24 +4,25 @@
 #
 # Kimi K3 serving benchmark on 16 NVIDIA Blackwell GPUs.
 #
-# Brings up trtllm-serve with attention DP + 16-way expert parallelism, then
-# drives the in-repo benchmark client (tensorrt_llm/serve/scripts/
-# benchmark_serving.py) with synthetic random 8K-input/1K-output requests.
-# Per concurrency C: one warmup pass (C requests, discarded), then one
-# measured pass (10*C requests) saved as JSON.
+# Brings up trtllm-serve with attention TP16 + expert parallelism 16 and the
+# breakable prefill CUDA graph (prefill_cuda_graph_backend: breakable) with the
+# overlap scheduler on, then drives the InferenceX bench_serving client
+# (InferenceX/utils/bench_serving/benchmark_serving.py) co-located on the head
+# node with synthetic random 8K-input/1K-output requests at concurrency 1.
+# One warmup request is discarded before 10 measured requests.
 #
 # Submit from the repository root of a built TensorRT-LLM checkout (see the
 # README Prerequisites section):
 #
 #   sbatch examples/kimi_k3/run_serving_benchmark_kimi_k3.sbatch \
-#       --model /path/to/kimi-k3-checkpoint \
 #       --image /path/to/tensorrt-llm-container.sqsh
 #
-# Optional arguments: --isl N (default 8192), --osl N (default 1024),
-# --concurrencies "64 256". REPO defaults to the submit directory (override
-# by exporting REPO) and must contain the built TensorRT-LLM checkout.
-# Results and server/client logs go to kimi-k3-serving-benchmark-<job-id>/
-# in the submission directory.
+# Optional arguments: --model PATH (default the shared kimi-k3 checkpoint),
+# --isl N (default 8192), --osl N (default 1024), --concurrencies "1". REPO
+# defaults to the submit directory (override by exporting REPO) and must
+# contain the built TensorRT-LLM checkout. The InferenceX repo is expected as a
+# sibling of REPO (override with BENCH_SERVING_DIR). Results and server/client
+# logs go to kimi-k3-serving-benchmark-<job-id>/ in the submission directory.
 #
 # The --comment below requests an idle-GPU-reaper exemption on clusters that
 # cancel jobs whose GPUs sit idle: server initialization and weight loading
@@ -33,7 +34,6 @@
 #SBATCH --account=${account}
 #SBATCH --nodes=4
 #SBATCH --ntasks-per-node=4
-#SBATCH --gpus-per-node=4
 #SBATCH --time=03:00:00
 #SBATCH --output=kimi-k3-serving-benchmark-%j.log
 #SBATCH --comment='{"OccupiedIdleGPUsJobReaper":{"exemptIdleTimeMins":"45","reason":"benchmarking","description":"Kimi K3 16-GPU server initialization and weight loading takes 10-15 minutes before timed benchmark traffic"}}'
@@ -41,14 +41,14 @@
 set -euo pipefail
 
 usage() {
-    echo "Usage: sbatch $0 --model PATH --image PATH [--isl N] [--osl N] [--concurrencies \"64 256\"]"
+    echo "Usage: sbatch $0 --image PATH [--model PATH] [--isl N] [--osl N] [--concurrencies \"1\"]"
 }
 
-MODEL=""
+MODEL="/lustre/share/coreai_comparch_inferencex/models/kimi-k3"
 CONTAINER_IMAGE=""
 ISL=8192
 OSL=1024
-CONCURRENCIES="64 256"
+CONCURRENCIES="1"
 PORT=8000
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -82,7 +82,6 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-[[ -n "$MODEL" ]] || { echo "error: --model is required" >&2; usage >&2; exit 2; }
 [[ -n "$CONTAINER_IMAGE" ]] || { echo "error: --image is required" >&2; usage >&2; exit 2; }
 [[ -e "$MODEL" ]] || { echo "error: model path does not exist: $MODEL" >&2; exit 2; }
 [[ -e "$CONTAINER_IMAGE" ]] || { echo "error: image path does not exist: $CONTAINER_IMAGE" >&2; exit 2; }
@@ -95,18 +94,29 @@ done
 MAX_SEQ_LEN=$((ISL + OSL + 128))
 
 REPO=${REPO:-$SLURM_SUBMIT_DIR}
+# InferenceX bench_serving client (co-located on the head node). Expected as a
+# sibling of the TensorRT-LLM checkout unless BENCH_SERVING_DIR overrides it.
+BENCH_SERVING_DIR=${BENCH_SERVING_DIR:-$(dirname "$REPO")/InferenceX/utils/bench_serving}
+[[ -e "$BENCH_SERVING_DIR/benchmark_serving.py" ]] || {
+    echo "error: InferenceX bench_serving not found at $BENCH_SERVING_DIR (set BENCH_SERVING_DIR)" >&2
+    exit 2
+}
 WORK_DIR=$SLURM_SUBMIT_DIR/kimi-k3-serving-benchmark-$SLURM_JOB_ID
 mkdir -p "$WORK_DIR"
 
-# Serving config; free_gpu_memory_fraction 0.25 leaves headroom for the
-# KDA/SSM state cache on top of the model weights.
+# Serving config. tep16 (attention TP16, no attention DP) + EP16 MoE, the
+# breakable prefill CUDA graph, and the overlap scheduler. free_gpu_memory
+# _fraction 0.25 leaves headroom for the KDA/SSM state cache on the weights.
 CONFIG_FILE=$WORK_DIR/serve_config.yaml
 cat > "$CONFIG_FILE" <<'EOF'
-enable_attention_dp: true
+enable_attention_dp: false
 moe_expert_parallel_size: 16
 disable_overlap_scheduler: false
 cuda_graph_config:
-  max_batch_size: 32
+  max_batch_size: 16
+prefill_cuda_graph_backend: breakable
+prefill_capture_num_tokens: [8192]
+stream_interval: 10
 enable_chunked_prefill: true
 kv_cache_config:
   enable_block_reuse: false
@@ -119,7 +129,7 @@ EOF
 CACHE_DIR=${CACHE_DIR:-$SLURM_SUBMIT_DIR/.kimi_k3_cache}
 mkdir -p "$CACHE_DIR"
 
-MOUNTS="$REPO:$REPO:rw,$MODEL:$MODEL:ro,$WORK_DIR:$WORK_DIR:rw,$CACHE_DIR:$CACHE_DIR:rw"
+MOUNTS="$REPO:$REPO:rw,$MODEL:$MODEL:ro,$WORK_DIR:$WORK_DIR:rw,$CACHE_DIR:$CACHE_DIR:rw,$BENCH_SERVING_DIR:$BENCH_SERVING_DIR:ro"
 export PYTHONPATH="$REPO${PYTHONPATH:+:$PYTHONPATH}"
 HEAD_NODE=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | awk 'NR == 1')
 
@@ -141,7 +151,9 @@ srun --mpi=pmix --kill-on-bad-exit=1 \
         # Node-local Triton cache: ~/.triton on shared NFS races across
         # ranks during autotune JIT (stale file handles).
         export TRITON_CACHE_DIR=/tmp/triton-cache-rank\${SLURM_PROCID:-0}
+        export TRTLLM_DG_CACHE_DIR=/tmp/deep-gemm-${SLURM_JOB_ID}-rank\${SLURM_PROCID:-0}
         mkdir -p \"\$TRITON_CACHE_DIR\"
+        mkdir -p \"\$TRTLLM_DG_CACHE_DIR\"
         # Shared warm caches (see the CACHE_DIR comment above).
         export FLASHINFER_WORKSPACE_BASE=$CACHE_DIR/fi_workspace
         export FLASHINFER_CUBIN_DIR=$CACHE_DIR/fi_cubins
@@ -152,6 +164,10 @@ srun --mpi=pmix --kill-on-bad-exit=1 \
         # a caller-side forced communication strategy.
         unset TRTLLM_FORCE_COMM_METHOD
 
+        # FP8 weight-read: fused gate_up on, KDA glue kept BF16.
+        export KIMI_K3_FP8_WEIGHT_READ=1
+        export KIMI_K3_FP8_WEIGHT_READ_KDA=0
+        export KIMI_K3_FP8_WEIGHT_READ_GATE_UP=1
         # In-place venv of the built checkout (build_wheel.py creates .venv-3.12).
         export PATH=\"$REPO/.venv-3.12/bin:\$PATH\"
 
@@ -161,7 +177,7 @@ srun --mpi=pmix --kill-on-bad-exit=1 \
             --host 0.0.0.0 \
             --port $PORT \
             --tp_size 16 \
-            --max_batch_size 32 \
+            --max_batch_size 16 \
             --max_num_tokens 8192 \
             --max_seq_len $MAX_SEQ_LEN \
             --trust_remote_code \
@@ -183,26 +199,32 @@ until curl -sf -o /dev/null "http://127.0.0.1:$PORT/health"; do
 done
 echo "Server is healthy; starting benchmark sweep (see $WORK_DIR/client.log)."
 
-# Client on the head node, alongside the server. The random dataset is
-# generated client-side (--random-ids --tokenize-on-client) so the server
-# sees exactly ISL input tokens; --ignore-eos fixes output length at OSL.
-srun --overlap --kill-on-bad-exit=1 --nodes=1 --ntasks=1 -w "$HEAD_NODE" \
+# Client on the head node, alongside the server (no separate allocation). The
+# InferenceX bench_serving random dataset is generated client-side so the
+# server sees exactly ISL input tokens; --ignore-eos fixes output length at OSL.
+# --mpi=none so the single-rank client never joins the server step's PMIx job.
+srun --overlap --mpi=none --kill-on-bad-exit=1 --nodes=1 --ntasks=1 -w "$HEAD_NODE" \
     --container-image="$CONTAINER_IMAGE" \
     --container-mount-home \
     --container-mounts="$MOUNTS" \
     --output="$WORK_DIR/client.log" \
     bash -c "
         set -x
+        # Prevent the client-only process from inheriting the server step's
+        # Slurm/PMIx environment and spuriously calling MPI_Init_thread.
+        for mpi_env in \$(env | awk -F= '/^(PMI|PMIX|MPI|OMPI|SLURM)_/{print \$1}'); do
+            unset \"\$mpi_env\"
+        done
         export PATH=\"$REPO/.venv-3.12/bin:\$PATH\"
 
         run_client() {
-            python3 -m tensorrt_llm.serve.scripts.benchmark_serving \
+            python3 '$BENCH_SERVING_DIR/benchmark_serving.py' \
+                --backend openai \
                 --model \"$MODEL\" \
                 --host 127.0.0.1 \
                 --port $PORT \
+                --endpoint /v1/completions \
                 --dataset-name random \
-                --random-ids \
-                --tokenize-on-client \
                 --random-input-len $ISL \
                 --random-output-len $OSL \
                 --ignore-eos \
