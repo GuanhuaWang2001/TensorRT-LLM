@@ -34,9 +34,9 @@
 #SBATCH --account=${account}
 #SBATCH --nodes=4
 #SBATCH --ntasks-per-node=4
-#SBATCH --time=03:00:00
+#SBATCH --time=05:00:00
 #SBATCH --output=kimi-k3-serving-benchmark-%j.log
-#SBATCH --comment='{"OccupiedIdleGPUsJobReaper":{"exemptIdleTimeMins":"45","reason":"benchmarking","description":"Kimi K3 16-GPU server initialization and weight loading takes 10-15 minutes before timed benchmark traffic"}}'
+#SBATCH --comment='{"OccupiedIdleGPUsJobReaper":{"exemptIdleTimeMins":"240","reason":"benchmarking","description":"Kimi K3 16-GPU server initialization and weight loading takes 10-15 minutes; the server is kept alive after the sweep for iterative testing"}}'
 
 set -euo pipefail
 
@@ -251,5 +251,17 @@ srun --overlap --mpi=none --kill-on-bad-exit=1 --nodes=1 --ntasks=1 -w "$HEAD_NO
     "
 
 echo "Benchmark complete; results in $WORK_DIR"
+
+# Keep the server + allocation alive for iterative testing instead of
+# releasing after a single sweep. Export KEEP_ALIVE=<seconds> before sbatch to
+# hold the live server (drive more client sweeps with
+# 'srun --overlap --mpi=none --nodes=1 --ntasks=1 -w <head-node> ...' into this
+# job, or 'scancel $SLURM_JOB_ID' to release early). Default 0 = tear down now.
+KEEP_ALIVE=${KEEP_ALIVE:-0}
+if (( KEEP_ALIVE > 0 )); then
+    echo "Keeping server + allocation alive for ${KEEP_ALIVE}s on $HEAD_NODE:$PORT (KEEP_ALIVE); scancel $SLURM_JOB_ID to release early."
+    sleep "$KEEP_ALIVE" || true
+fi
+
 kill "$SERVER_PID" 2>/dev/null || true
 wait "$SERVER_PID" 2>/dev/null || true
