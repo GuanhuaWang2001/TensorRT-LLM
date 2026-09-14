@@ -20,7 +20,16 @@ def _load_cli_module():
 
 
 def _make_workflow(module, workspace, *, clean=False):
-    return module.AgentTeamWorkflow(workspace=workspace, clean=clean)
+    workflow = module.AgentTeamWorkflow(workspace=workspace, clean=clean)
+    workflow.task_path.write_text("description: demo\n", encoding="utf-8")
+    workflow._configure_agents()
+    return workflow
+
+
+def _configure_agents(workflow):
+    workflow.task_path.write_text("description: demo\n", encoding="utf-8")
+    workflow._configure_agents()
+    return workflow
 
 
 def _write_task_yaml(workspace, content: str = "description: demo\n") -> Path:
@@ -1547,6 +1556,7 @@ def test_coder_human_input_enabled_with_build_human_review(tmp_path):
         workspace=tmp_path,
         build_human_review_enabled=True,
     )
+    _configure_agents(workflow)
     try:
         assert workflow.coder.config.human_input_enabled is True
     finally:
@@ -1568,6 +1578,7 @@ def test_coder_human_input_independent_of_plan_human_review(tmp_path):
         plan_human_review_enabled=False,
         build_human_review_enabled=True,
     )
+    _configure_agents(plan_off_build_on)
     try:
         assert plan_off_build_on.coder.config.human_input_enabled is True
     finally:
@@ -1578,6 +1589,7 @@ def test_coder_human_input_independent_of_plan_human_review(tmp_path):
         plan_human_review_enabled=True,
         build_human_review_enabled=False,
     )
+    _configure_agents(plan_on_build_off)
     try:
         assert plan_on_build_off.coder.config.human_input_enabled is False
     finally:
@@ -1602,6 +1614,7 @@ def test_plan_drafter_always_has_human_input_enabled(tmp_path):
             plan_human_review_enabled=plan_flag,
             build_human_review_enabled=build_flag,
         )
+        _configure_agents(workflow)
         try:
             assert workflow.plan_drafter.config.human_input_enabled is True
             for layer in (workflow.plan_reviewer, workflow.reviewer, workflow.qa):
@@ -1622,6 +1635,7 @@ def test_reset_coder_preserves_human_input_flag(tmp_path):
         workspace=tmp_path / "on",
         build_human_review_enabled=True,
     )
+    _configure_agents(enabled)
     try:
         assert enabled.coder.config.human_input_enabled is True
         enabled._reset_coder()
@@ -1657,54 +1671,30 @@ def test_coder_prompt_documents_ask_human():
 
 
 def test_coder_and_reviewer_required_tools_include_status_update(tmp_path):
-    """The composed Stop hook must enforce both progress and status calls."""
+    """The common layer contract requires both progress and status calls."""
     module = _load_module()
     workflow = _make_workflow(module, tmp_path)
     try:
-        # Each per-tool hook is a separate matcher; with two required tools
-        # we expect two matchers stacked together (composition = AND).
-        coder_hooks = workflow.coder.config.backend.hooks
-        reviewer_hooks = workflow.reviewer.config.backend.hooks
-        plan_drafter_hooks = workflow.plan_drafter.config.backend.hooks
-        plan_reviewer_hooks = workflow.plan_reviewer.config.backend.hooks
-        qa_hooks = workflow.qa.config.backend.hooks
-
-        assert coder_hooks is not None
-        assert len(coder_hooks["Stop"]) == 2
-        assert reviewer_hooks is not None
-        assert len(reviewer_hooks["Stop"]) == 2
-
-        # PlanDrafter, PlanReviewer, and QA each have a single required
-        # tool — one matcher.
-        assert plan_drafter_hooks is not None
-        assert len(plan_drafter_hooks["Stop"]) == 1
-        assert plan_reviewer_hooks is not None
-        assert len(plan_reviewer_hooks["Stop"]) == 1
-        assert qa_hooks is not None
-        assert len(qa_hooks["Stop"]) == 1
+        assert workflow.coder.config.required_tools == (
+            "append_coder_progress",
+            "update_status",
+        )
+        assert workflow.reviewer.config.required_tools == (
+            "append_reviewer_progress",
+            "update_status",
+        )
+        assert workflow.plan_drafter.config.required_tools == ("append_plan_drafter_progress",)
+        assert workflow.plan_reviewer.config.required_tools == ("append_plan_reviewer_progress",)
+        assert workflow.qa.config.required_tools == ("append_qa_progress",)
     finally:
         workflow.close()
-
-
-def test_compose_required_tools_hooks_handles_empty_and_single(tmp_path):
-    """Helper returns ``None`` for empty and one matcher for a single tool."""
-    module = _load_module()
-
-    assert module._compose_required_tools_hooks([]) is None
-
-    single = module._compose_required_tools_hooks(["append_plan_drafter_progress"])
-    assert single is not None
-    assert len(single["Stop"]) == 1
-
-    pair = module._compose_required_tools_hooks(["append_coder_progress", "update_status"])
-    assert pair is not None
-    assert len(pair["Stop"]) == 2
 
 
 def test_qa_uses_stateless_session(tmp_path):
     """QA's session must be stateless so each iteration starts fresh."""
     module = _load_module()
     workflow = module.AgentTeamWorkflow(workspace=tmp_path)
+    _configure_agents(workflow)
     try:
         assert workflow.qa.config.session.mode == "stateless"
         # Coder, reviewer, plan_drafter, and plan_reviewer remain

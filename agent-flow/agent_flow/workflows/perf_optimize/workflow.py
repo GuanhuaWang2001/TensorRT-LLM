@@ -15,8 +15,8 @@ from agent_flow import (
     AgentLayerConfig,
     BackendConfig,
     SessionConfig,
-    require_tool_call_stop_hook,
 )
+from agent_flow.agent_runtime import AgentRuntimeConfig, resolve_agent_runtime
 from agent_flow.console import print_message, print_rule
 from agent_flow.logger import get_logger
 from agent_flow.workflows.perf_analyze.sol_methodology import (
@@ -87,43 +87,27 @@ def _progress_has_entries(path: Path) -> bool:
     return bool(data[OPTIMIZATION_STAGE])
 
 
-def _compose_required_tools_hooks(required_tools: list[str]) -> dict | None:
-    """Compose stop hooks that require *every* listed tool to be called.
-
-    ``require_tool_call_stop_hook`` enforces "at least one of the listed
-    names was called". Stacking one such hook per tool — each independent
-    — yields AND semantics: every per-tool hook must allow the stop, so
-    all listed tools must have been called this turn.
-    """
-    if not required_tools:
-        return None
-    merged: dict[str, list] = {"Stop": []}
-    for name in required_tools:
-        merged["Stop"].extend(require_tool_call_stop_hook([name])["Stop"])
-    return merged
-
-
 def _make_agent(
     name: str,
     system_prompt: str,
+    runtime: AgentRuntimeConfig,
     tools: list | None = None,
     required_tools: list[str] | None = None,
-    backend_kind: str = "claude-code",
-    model: str = CLAUDE_CODE_DEFAULT_MODEL,
     session_mode: str = "persistent",
 ) -> AgentLayer:
-    hooks = _compose_required_tools_hooks(required_tools or [])
     return AgentLayer(
         AgentLayerConfig(
             name=name,
             system_prompt=system_prompt,
             backend=BackendConfig(
-                kind=backend_kind,
-                model=model,
+                kind=runtime.backend,
+                model=runtime.model,
+                reasoning_effort=runtime.reasoning_effort,
                 tools=tools,
-                hooks=hooks,
+                extra_mcp_servers=runtime.extra_mcp_servers,
             ),
             session=SessionConfig(mode=session_mode),
+            required_tools=tuple(required_tools or ()),
         )
     )
 
@@ -314,26 +298,9 @@ class PerfOptimizeWorkflow:
         self._progress_ctx = ProgressContext(path=self.progress_path)
         progress_tools = build_progress_tools(self._progress_ctx)
 
-        for role in _ROLES:
-            setattr(
-                self,
-                role,
-                _make_agent(
-                    role,
-                    getattr(self.prompts, role),
-                    progress_tools[role],
-                    required_tools=[f"append_{role}_progress"],
-                    # Sessions are scoped to each role's unit of work: the
-                    # judges (evaluator, qa) are stateless so every verdict
-                    # gets fresh eyes, uninfluenced by earlier attempts' /
-                    # rounds' conclusions; the optimizer's persistent
-                    # session is additionally reset at item boundaries
-                    # (see ``_advance_after_item``); the analyzer keeps
-                    # campaign-long memory of the roadmap it authored.
-                    session_mode="stateless" if role in ("qa", "evaluator") else "persistent",
-                ),
-            )
         self._progress_tools = progress_tools
+        for role in _ROLES:
+            setattr(self, role, None)
 
     def __enter__(self) -> "PerfOptimizeWorkflow":
         return self
@@ -343,7 +310,35 @@ class PerfOptimizeWorkflow:
 
     def close(self) -> None:
         for role in _ROLES:
-            getattr(self, role).__exit__(None, None, None)
+            layer = getattr(self, role)
+            if layer is not None:
+                layer.__exit__(None, None, None)
+
+    def _configure_agents(self) -> None:
+        task_data = self._task_data()
+        for role in _ROLES:
+            if getattr(self, role) is not None:
+                continue
+            runtime = resolve_agent_runtime(
+                task_data,
+                role,
+                legacy_backend="claude-code",
+                legacy_model=CLAUDE_CODE_DEFAULT_MODEL,
+            )
+            setattr(
+                self,
+                role,
+                _make_agent(
+                    role,
+                    getattr(self.prompts, role),
+                    runtime,
+                    self._progress_tools[role],
+                    required_tools=[f"append_{role}_progress"],
+                    # Judges are stateless; other roles retain their existing
+                    # unit-of-work session scope.
+                    session_mode="stateless" if role in ("qa", "evaluator") else "persistent",
+                ),
+            )
 
     # ------------------------------------------------------------- orchestration
 
@@ -353,6 +348,7 @@ class PerfOptimizeWorkflow:
         state = self._init_state(task, log)
         if state is None:
             return
+        self._configure_agents()
 
         # Where git commands run, decided once and before the first one is issued.
         #

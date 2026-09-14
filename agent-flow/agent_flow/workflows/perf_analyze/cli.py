@@ -30,7 +30,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         required=True,
         help="Path to the task.yaml spec. Requires `checkpoint_path` and "
         "`trtllm_repo_path`; optional top-level `extra_llm_api_options` "
-        "path, optional `benchmark` / `profile` blocks, an optional "
+        "path, optional `benchmark` / `profile` blocks, an optional `agents` "
+        "block for per-role backend/model routing, an optional "
         "`slurm-environment` block, and an optional `sol` block "
         "(all fields optional: `enabled` gates the projector stage — on "
         "by default — and `gpu` names the GPU part for the SOL skill's "

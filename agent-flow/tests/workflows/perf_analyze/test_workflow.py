@@ -471,6 +471,8 @@ def test_clean_overwrites_stale_managed_files(tmp_path):
 def test_all_agents_use_claude_code_backend(tmp_path):
     workflow = Workflow(workspace=tmp_path / "ws")
     try:
+        workflow.task_path.write_text("{}\n", encoding="utf-8")
+        workflow._configure_agents()
         for layer in (
             workflow.benchmarker,
             workflow.projector,
@@ -479,8 +481,8 @@ def test_all_agents_use_claude_code_backend(tmp_path):
         ):
             assert layer.config.backend.kind == "claude-code"
             assert layer.config.backend.model == CLAUDE_CODE_DEFAULT_MODEL
-            # Each role is gated by a required-tool stop hook.
-            assert layer.config.backend.hooks is not None
+            assert layer.config.backend.hooks is None
+            assert layer.config.required_tools == (f"append_{layer.config.name}_progress",)
     finally:
         workflow.close()
 
@@ -495,6 +497,8 @@ def test_no_role_wires_an_external_mcp_server(tmp_path):
     """
     workflow = Workflow(workspace=tmp_path / "ws")
     try:
+        workflow.task_path.write_text("{}\n", encoding="utf-8")
+        workflow._configure_agents()
         for layer in (
             workflow.benchmarker,
             workflow.projector,
@@ -606,6 +610,8 @@ def test_orchestration_prompts_keep_serving_roles_in_one_turn(tmp_path):
 
 def test_each_agent_has_its_progress_tools(tmp_path):
     workflow = Workflow(workspace=tmp_path / "ws")
+    workflow.task_path.write_text("{}\n", encoding="utf-8")
+    workflow._configure_agents()
     expected = {
         "benchmarker": "append_benchmarker_progress",
         "projector": "append_projector_progress",

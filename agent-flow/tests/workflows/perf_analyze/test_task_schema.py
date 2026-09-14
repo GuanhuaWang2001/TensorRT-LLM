@@ -866,3 +866,20 @@ def test_a_malformed_slurm_block_does_not_decide_the_question(tmp_path):
     assert paths_are_local({"slurm-environment": "not-a-mapping"}) is True
     assert paths_are_local({"slurm-environment": {"cluster_ssh": "   "}}) is True
     assert paths_are_local({}) is True
+
+
+def test_agents_accept_analyze_roles_and_reject_optimize_only_roles(tmp_path):
+    ckpt, repo = _paths(tmp_path)
+    valid = {
+        "checkpoint_path": ckpt,
+        "trtllm_repo_path": repo,
+        "agents": {"roles": {"analyzer": {"backend": "codex"}}},
+    }
+    assert load_and_validate_task_yaml(_write(tmp_path, valid))["agents"] == valid["agents"]
+
+    invalid = {
+        **valid,
+        "agents": {"roles": {"optimizer": {"backend": "codex"}}},
+    }
+    with pytest.raises(TaskSchemaError, match="optimizer"):
+        load_and_validate_task_yaml(_write(tmp_path, invalid))

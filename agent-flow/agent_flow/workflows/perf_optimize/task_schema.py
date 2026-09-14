@@ -57,6 +57,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Mapping
 
+from agent_flow.agent_runtime import validate_agents
 from agent_flow.workflows.perf_analyze.task_schema import (
     EXTRA_LLM_API_OPTIONS_FIELD,
     TaskSchemaError,
@@ -134,6 +135,16 @@ VALID_METRICS: frozenset[str] = frozenset(
         for stat in ("mean", "median", "p90", "p99")
         for kind in ("ttft", "tpot", "itl", "e2el")
     }
+)
+
+AGENT_ROLES: tuple[str, ...] = (
+    "benchmarker",
+    "projector",
+    "analyzer",
+    "optimizer",
+    "evaluator",
+    "qa",
+    "reporter",
 )
 
 # The perf-optimize half of the key census the base schema documents. Same
@@ -405,9 +416,9 @@ def load_and_validate_task_yaml(
     agents read on disk is fully explicit; ``max_rounds_override`` (the
     CLI ``--max-rounds`` flag) is applied last, over the user's value.
     """
-    data = _base_load_and_validate(path)
+    data = _base_load_and_validate(path, known_agent_roles=None)
 
-    errors: list[str] = []
+    errors: list[str] = validate_agents(data, known_roles=AGENT_ROLES)
     # Disagg first: the harness config is the source of truth for the
     # measurement conditions, so the backfill has to land before the
     # blocks that are validated against them (focus_concurrencies against

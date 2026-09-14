@@ -16,12 +16,14 @@ class FakeClient(BackendClient):
         error: Exception | None = None,
         usage: UsageInfo | None = None,
         skills: list[str] | None = None,
+        turns: list[dict] | None = None,
     ) -> None:
         self.text = text
         self.tool_calls = tool_calls or []
         self.error = error
         self.usage = usage
         self.skills = skills
+        self.turns = turns
         self.messages: list[str] = []
         self.send_count = 0
         self.closed = False
@@ -32,11 +34,16 @@ class FakeClient(BackendClient):
     async def send_message(self, message: str):
         self.messages.append(message)
         self.send_count += 1
-        if self.error is not None:
-            raise self.error
-        for tool_call in self.tool_calls:
+        plan = self.turns[min(self.send_count - 1, len(self.turns) - 1)] if self.turns else {}
+        error = plan.get("error", self.error)
+        if error is not None:
+            raise error
+        for tool_call in plan.get("tool_calls", self.tool_calls):
             yield tool_call
-        yield ResultEvent(text=self.text, usage=self.usage)
+        yield ResultEvent(
+            text=plan.get("text", self.text),
+            usage=plan.get("usage", self.usage),
+        )
 
 
 class FakeBackend(Backend):
@@ -74,6 +81,7 @@ class FakeBackend(Backend):
             error=plan.get("error"),
             usage=plan.get("usage"),
             skills=plan.get("skills"),
+            turns=plan.get("turns"),
         )
         client.system_prompt = system_prompt
         client.model = model

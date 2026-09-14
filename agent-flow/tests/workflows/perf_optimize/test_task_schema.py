@@ -571,3 +571,20 @@ def test_the_census_matches_a_fully_populated_spec(tmp_path):
     )
 
     assert unknown == []
+
+
+def test_optimize_roles_survive_the_reused_analyze_validation_pass(tmp_path):
+    task = _write_task(
+        tmp_path,
+        {
+            "agents": {
+                "roles": {
+                    "optimizer": {"backend": "codex"},
+                    "evaluator": {"model": "gpt-5.6-sol"},
+                    "qa": {"reasoning_effort": "medium"},
+                }
+            }
+        },
+    )
+    resolved = task_schema.load_and_validate_task_yaml(task)
+    assert set(resolved["agents"]["roles"]) == {"optimizer", "evaluator", "qa"}

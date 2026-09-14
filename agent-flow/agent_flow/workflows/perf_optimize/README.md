@@ -148,6 +148,29 @@ The orchestrator — not the agents — owns the roadmap lifecycle fields and
 the git state of the TRT-LLM checkout, driven by the evaluator's
 structured decisions in `progress.yaml`.
 
+### Agent backend and model routing
+
+An optional top-level `agents` block in `task.yaml` selects `codex` or
+`claude-code`, a model slug, reasoning effort, and portable external MCP
+servers. `defaults` applies to every role and `roles.<name>` overrides
+individual fields. For example, this runs projector/analyzer on Astra ultra
+and every other role on Sol medium:
+
+```yaml
+agents:
+  defaults:
+    backend: codex
+    model: gpt-5.6-sol
+    reasoning_effort: medium
+  roles:
+    projector: {model: gpt-6-astra, reasoning_effort: ultra}
+    analyzer: {model: gpt-6-astra, reasoning_effort: ultra}
+```
+
+Omitting `agents` preserves the historical assignment. On resume, the
+checkpointed workspace's `task.yaml` remains authoritative, so a different
+new `--task` cannot change models midway through a campaign.
+
 ## The acceptance gate
 
 An attempt is **APPROVEd** only when all three hold:

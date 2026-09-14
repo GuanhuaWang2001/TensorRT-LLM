@@ -412,7 +412,12 @@ def _usage_from_thread_token_usage(token_usage: Any) -> UsageInfo | None:
     if total is None:
         return None
 
-    usage = _usage_from_token_breakdown(total)
+    # Per-turn counts must be additive across AgentLayer's required-tool
+    # continuation. The app server's ``total`` is cumulative for the thread;
+    # ``last`` is the current turn. Keep cumulative totals only for context
+    # occupancy.
+    current = _get(token_usage, "last") or total
+    usage = _usage_from_token_breakdown(current)
     context_tokens = _int_or_none(_get(total, "total_tokens", "totalTokens"))
     context_window = _int_or_none(_get(token_usage, "model_context_window", "modelContextWindow"))
 
@@ -606,13 +611,32 @@ def _handle_dynamic_tool_call(params: dict[str, Any]) -> dict[str, Any]:
 
 
 async def _call_optional_client_method(
-    client: Any, names: tuple[str, ...], payload: dict[str, Any]
+    client: Any,
+    names: tuple[str, ...],
+    payload: dict[str, Any],
+    *,
+    rpc_method: str | None = None,
 ) -> Any:
+    """Call a generated SDK method, with a version-skew RPC fallback.
+
+    Codex CLI features can appear before the Python SDK grows their generated
+    convenience methods.  The SDK's async wrapper still exposes its raw JSON-RPC
+    transport in that interval, so keep the compatibility shim isolated here.
+    """
     for name in names:
         method = getattr(client, name, None)
         if method is None:
             continue
         result = method(payload)
+        if inspect.isawaitable(result):
+            return await result
+        return result
+
+    call_sync = getattr(client, "_call_sync", None)
+    sync_client = getattr(client, "_sync", None)
+    request_raw = getattr(sync_client, "_request_raw", None)
+    if rpc_method is not None and callable(call_sync) and callable(request_raw):
+        result = call_sync(request_raw, rpc_method, payload)
         if inspect.isawaitable(result):
             return await result
         return result
@@ -671,6 +695,7 @@ async def _build_session_init_event(client: Any, cwd: Path) -> SessionInitEvent 
             client,
             ("skills_list", "skill_list"),
             {"cwds": [str(cwd)], "forceReload": False},
+            rpc_method="skills/list",
         )
         plugins_response = await _call_optional_client_method(
             client, ("plugin_list", "plugins_list"), {}
@@ -744,6 +769,30 @@ def _codex_backend_version() -> str:
 _REASONING_EFFORT = "max"
 
 _SDK_PATCHED = False
+
+
+def _codex_mcp_servers(servers: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Translate the portable task MCP shape to Codex config keys."""
+    normalized: dict[str, dict[str, Any]] = {}
+    for name, raw in servers.items():
+        if name == "agent-tools":
+            raise ValueError("extra_mcp_servers name 'agent-tools' is reserved")
+        if not isinstance(raw, dict):
+            raise ValueError(f"extra_mcp_servers[{name!r}] must be a mapping")
+        server = dict(raw)
+        transport = server.pop("type", None)
+        if transport not in (None, "stdio", "http"):
+            raise ValueError(f"extra_mcp_servers[{name!r}].type must be 'stdio' or 'http'")
+        if "url" in server:
+            if transport != "http":
+                raise ValueError(f"extra_mcp_servers[{name!r}].type must be 'http' when url is set")
+            headers = server.pop("headers", None)
+            if headers is not None:
+                server["http_headers"] = headers
+        elif "command" not in server:
+            raise ValueError(f"extra_mcp_servers[{name!r}] must set either command or url")
+        normalized[name] = server
+    return normalized
 
 
 def _relax_service_tier_on_module(module: Any) -> int:
@@ -824,15 +873,16 @@ def _patch_codex_sdk_service_tier() -> None:
 
 
 class CodexBackend(Backend):
-    def __init__(self) -> None:
+    def __init__(self, reasoning_effort: str | None = None) -> None:
         self._codex = None
         self._default_approval_handler: Callable[..., dict[str, Any]] | None = None
+        self._reasoning_effort = reasoning_effort or _REASONING_EFFORT
 
     def version(self) -> str:
         return _codex_backend_version()
 
     def reasoning_effort(self) -> str:
-        return _REASONING_EFFORT
+        return self._reasoning_effort
 
     async def __aenter__(self) -> "CodexBackend":
         _patch_codex_sdk_service_tier()
@@ -890,13 +940,9 @@ class CodexBackend(Backend):
         extra_mcp_servers: dict[str, Any] | None = None,
         cwd: Path | None = None,
     ) -> AsyncIterator[BackendClient]:
-        # ``disallowed_tools`` and ``extra_mcp_servers`` are currently
-        # Claude-Code-only concepts (they map onto
-        # ``ClaudeAgentOptions.disallowed_tools`` and
-        # ``ClaudeAgentOptions.mcp_servers``). The Codex backend has no
-        # analogous tool-filtering / external-MCP-server hooks, so we
-        # accept and ignore them to keep ``Backend.create_client``
-        # uniform.
+        # Codex still has no backend-neutral mapping for ``hooks`` or
+        # ``disallowed_tools``. External MCP servers do have a thread-scoped
+        # mapping and are normalized below.
         if self._codex is None:
             raise RuntimeError("CodexBackend must be entered before creating clients.")
 
@@ -912,8 +958,13 @@ class CodexBackend(Backend):
             model=model,
             developer_instructions=system_prompt or None,
             config={
-                "model_reasoning_effort": _REASONING_EFFORT,
+                "model_reasoning_effort": self._reasoning_effort,
                 "model_context_window": 1000000,
+                **(
+                    {"mcp_servers": _codex_mcp_servers(extra_mcp_servers)}
+                    if extra_mcp_servers
+                    else {}
+                ),
             },
             cwd=str(session_cwd),
             sandbox=SandboxMode.danger_full_access,

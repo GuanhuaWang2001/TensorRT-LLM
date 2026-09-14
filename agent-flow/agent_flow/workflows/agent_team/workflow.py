@@ -3,6 +3,8 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
+import yaml
+
 from agent_flow import (
     CLAUDE_CODE_DEFAULT_MODEL,
     CODEX_DEFAULT_MODEL,
@@ -10,8 +12,8 @@ from agent_flow import (
     AgentLayerConfig,
     BackendConfig,
     SessionConfig,
-    require_tool_call_stop_hook,
 )
+from agent_flow.agent_runtime import AgentRuntimeConfig, resolve_agent_runtime, validate_agents
 from agent_flow.console import print_message, print_rule
 from agent_flow.logger import get_logger
 
@@ -45,42 +47,32 @@ from .status import StatusContext, build_status_tools
 
 _PLAN_STAGES = (STAGE_PLAN_DRAFTER, STAGE_PLAN_REVIEWER, STAGE_PLAN_HUMAN)
 _REPLAN_STAGES = (STAGE_REPLAN, STAGE_REPLAN_REVIEWER, STAGE_REPLAN_HUMAN)
-
-
-def _compose_required_tools_hooks(required_tools: list[str]) -> dict | None:
-    """Compose stop hooks that require *every* listed tool to be called.
-
-    ``require_tool_call_stop_hook`` enforces "at least one of the listed
-    names was called". Stacking one such hook per tool — each independent —
-    yields AND semantics: every per-tool hook must allow the stop, so all
-    listed tools must have been called this turn.
-    """
-    if not required_tools:
-        return None
-    merged: dict[str, list] = {"Stop": []}
-    for name in required_tools:
-        merged["Stop"].extend(require_tool_call_stop_hook([name])["Stop"])
-    return merged
+_ROLES = ("plan_drafter", "plan_reviewer", "coder", "reviewer", "qa")
 
 
 def _make_agent(
     name: str,
     system_prompt: str,
+    runtime: AgentRuntimeConfig,
     tools: list | None = None,
     required_tools: list[str] | None = None,
-    backend_kind: str = "claude-code",
-    model: str = CLAUDE_CODE_DEFAULT_MODEL,
     session_mode: str = "persistent",
     human_input_enabled: bool = False,
 ) -> AgentLayer:
-    hooks = _compose_required_tools_hooks(required_tools or [])
     return AgentLayer(
         AgentLayerConfig(
             name=name,
             system_prompt=system_prompt,
-            backend=BackendConfig(kind=backend_kind, model=model, tools=tools, hooks=hooks),
+            backend=BackendConfig(
+                kind=runtime.backend,
+                model=runtime.model,
+                reasoning_effort=runtime.reasoning_effort,
+                tools=tools,
+                extra_mcp_servers=runtime.extra_mcp_servers,
+            ),
             session=SessionConfig(mode=session_mode),
             human_input_enabled=human_input_enabled,
+            required_tools=tuple(required_tools or ()),
         )
     )
 
@@ -256,50 +248,11 @@ class AgentTeamWorkflow:
         # via ``--plan-human-review``) gates the plan-stage human
         # checkpoint; ``build_human_review_enabled`` gates the Coder's
         # mid-build escape hatch.
-        self.plan_drafter = _make_agent(
-            "plan_drafter",
-            self.prompts.plan_drafter,
-            progress_tools["plan_drafter"],
-            required_tools=["append_plan_drafter_progress"],
-            human_input_enabled=True,
-            backend_kind="codex",
-            model=CODEX_DEFAULT_MODEL,
-        )
-        self.plan_reviewer = _make_agent(
-            "plan_reviewer",
-            self.prompts.plan_reviewer,
-            progress_tools["plan_reviewer"],
-            required_tools=["append_plan_reviewer_progress"],
-        )
-        self.coder = _make_agent(
-            "coder",
-            self.prompts.coder,
-            progress_tools["coder"] + status_tools["coder"],
-            required_tools=["append_coder_progress", "update_status"],
-            human_input_enabled=self.build_human_review_enabled,
-        )
-        self.reviewer = _make_agent(
-            "reviewer",
-            self.prompts.reviewer,
-            progress_tools["reviewer"] + status_tools["reviewer"],
-            required_tools=["append_reviewer_progress", "update_status"],
-            backend_kind="codex",
-            model=CODEX_DEFAULT_MODEL,
-        )
-        # QA is stateless so each iteration starts with a fresh session —
-        # no carry-over bias from prior runs. The handler set is also
-        # narrower (append only, no read_latest_progress, no status.md) so
-        # QA can only ground its verdict in task.yaml and
-        # acceptance-criteria.md.
-        self.qa = _make_agent(
-            "qa",
-            self.prompts.qa,
-            progress_tools["qa"],
-            required_tools=["append_qa_progress"],
-            session_mode="stateless",
-        )
         self._progress_tools = progress_tools
         self._status_tools = status_tools
+        self._agent_runtimes: dict[str, AgentRuntimeConfig] = {}
+        for role in _ROLES:
+            setattr(self, role, None)
 
     def __enter__(self) -> "AgentTeamWorkflow":
         return self
@@ -309,7 +262,79 @@ class AgentTeamWorkflow:
 
     def close(self) -> None:
         for layer in (self.plan_drafter, self.plan_reviewer, self.coder, self.reviewer, self.qa):
-            layer.__exit__(None, None, None)
+            if layer is not None:
+                layer.__exit__(None, None, None)
+
+    def _configure_agents(self) -> None:
+        try:
+            loaded = yaml.safe_load(self.task_path.read_text(encoding="utf-8"))
+        except yaml.YAMLError as exc:
+            raise ValueError(f"cannot parse agents config in {self.task_path}: {exc}") from exc
+        task_data = loaded if isinstance(loaded, dict) else {}
+        errors = validate_agents(task_data, known_roles=_ROLES)
+        if errors:
+            raise ValueError("invalid agents configuration: " + "; ".join(errors))
+
+        legacy = {
+            "plan_drafter": ("codex", CODEX_DEFAULT_MODEL),
+            "plan_reviewer": ("claude-code", CLAUDE_CODE_DEFAULT_MODEL),
+            "coder": ("claude-code", CLAUDE_CODE_DEFAULT_MODEL),
+            "reviewer": ("codex", CODEX_DEFAULT_MODEL),
+            "qa": ("claude-code", CLAUDE_CODE_DEFAULT_MODEL),
+        }
+        self._agent_runtimes = {
+            role: resolve_agent_runtime(
+                task_data,
+                role,
+                legacy_backend=legacy[role][0],
+                legacy_model=legacy[role][1],
+            )
+            for role in _ROLES
+        }
+        self.plan_drafter = self.plan_drafter or _make_agent(
+            "plan_drafter",
+            self.prompts.plan_drafter,
+            self._agent_runtimes["plan_drafter"],
+            self._progress_tools["plan_drafter"],
+            required_tools=["append_plan_drafter_progress"],
+            human_input_enabled=True,
+        )
+        self.plan_reviewer = self.plan_reviewer or _make_agent(
+            "plan_reviewer",
+            self.prompts.plan_reviewer,
+            self._agent_runtimes["plan_reviewer"],
+            self._progress_tools["plan_reviewer"],
+            required_tools=["append_plan_reviewer_progress"],
+        )
+        self.coder = self.coder or self._new_coder()
+        self.reviewer = self.reviewer or self._new_reviewer()
+        self.qa = self.qa or _make_agent(
+            "qa",
+            self.prompts.qa,
+            self._agent_runtimes["qa"],
+            self._progress_tools["qa"],
+            required_tools=["append_qa_progress"],
+            session_mode="stateless",
+        )
+
+    def _new_coder(self) -> AgentLayer:
+        return _make_agent(
+            "coder",
+            self.prompts.coder,
+            self._agent_runtimes["coder"],
+            self._progress_tools["coder"] + self._status_tools["coder"],
+            required_tools=["append_coder_progress", "update_status"],
+            human_input_enabled=self.build_human_review_enabled,
+        )
+
+    def _new_reviewer(self) -> AgentLayer:
+        return _make_agent(
+            "reviewer",
+            self.prompts.reviewer,
+            self._agent_runtimes["reviewer"],
+            self._progress_tools["reviewer"] + self._status_tools["reviewer"],
+            required_tools=["append_reviewer_progress", "update_status"],
+        )
 
     # ------------------------------------------------------------- orchestration
 
@@ -319,6 +344,7 @@ class AgentTeamWorkflow:
         state = self._init_state(task, log)
         if state is None:
             return
+        self._configure_agents()
 
         self._record_pending_feedback(state, log)
 
@@ -958,26 +984,13 @@ class AgentTeamWorkflow:
         if not isinstance(self.coder, AgentLayer):
             return
         self.coder.__exit__(None, None, None)
-        self.coder = _make_agent(
-            "coder",
-            self.prompts.coder,
-            self._progress_tools["coder"] + self._status_tools["coder"],
-            required_tools=["append_coder_progress", "update_status"],
-            human_input_enabled=self.build_human_review_enabled,
-        )
+        self.coder = self._new_coder()
 
     def _reset_reviewer(self) -> None:
         if not isinstance(self.reviewer, AgentLayer):
             return
         self.reviewer.__exit__(None, None, None)
-        self.reviewer = _make_agent(
-            "reviewer",
-            self.prompts.reviewer,
-            self._progress_tools["reviewer"] + self._status_tools["reviewer"],
-            required_tools=["append_reviewer_progress", "update_status"],
-            backend_kind="codex",
-            model=CODEX_DEFAULT_MODEL,
-        )
+        self.reviewer = self._new_reviewer()
 
     def _latest_reviewer_decision(self) -> str | None:
         entry = latest_entry(self.progress_path, "reviewer")

@@ -45,6 +45,10 @@ from typing import Any, Mapping
 
 import yaml
 
+from agent_flow.agent_runtime import AGENTS_FIELD, validate_agents
+
+AGENT_ROLES: tuple[str, ...] = ("benchmarker", "projector", "analyzer", "reporter")
+
 REQUIRED_PATH_FIELDS: tuple[str, ...] = (
     "checkpoint_path",
     "trtllm_repo_path",
@@ -175,6 +179,7 @@ KNOWN_TOP_LEVEL_KEYS: frozenset[str] = frozenset(
         "profile",
         SLURM_ENVIRONMENT_FIELD,
         SOL_FIELD,
+        AGENTS_FIELD,
     )
 )
 
@@ -366,7 +371,11 @@ def _validate_mapping_block(data: Mapping[str, Any], key: str, errors: list[str]
     return dict(value)
 
 
-def load_and_validate_task_yaml(path: str | Path) -> dict[str, Any]:
+def load_and_validate_task_yaml(
+    path: str | Path,
+    *,
+    known_agent_roles: tuple[str, ...] | None = AGENT_ROLES,
+) -> dict[str, Any]:
     """Parse ``path`` as YAML and validate the perf-analyze schema.
 
     Returns the parsed mapping with the optional ``benchmark`` / ``profile``
@@ -407,6 +416,7 @@ def load_and_validate_task_yaml(path: str | Path) -> dict[str, Any]:
         )
 
     errors: list[str] = []
+    errors.extend(validate_agents(data, known_roles=known_agent_roles))
 
     # Decided once, from the spec, before any path is looked at. Every other check
     # in this function runs either way — this suppresses existence, and only

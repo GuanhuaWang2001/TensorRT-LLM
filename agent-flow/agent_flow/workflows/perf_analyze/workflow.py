@@ -12,8 +12,8 @@ from agent_flow import (
     AgentLayerConfig,
     BackendConfig,
     SessionConfig,
-    require_tool_call_stop_hook,
 )
+from agent_flow.agent_runtime import AgentRuntimeConfig, resolve_agent_runtime
 from agent_flow.console import print_message, print_rule
 from agent_flow.logger import get_logger
 
@@ -99,43 +99,27 @@ def _progress_has_entries(path: Path) -> bool:
     return bool(data[ANALYSIS_STAGE])
 
 
-def _compose_required_tools_hooks(required_tools: list[str]) -> dict | None:
-    """Compose stop hooks that require *every* listed tool to be called.
-
-    ``require_tool_call_stop_hook`` enforces "at least one of the listed
-    names was called". Stacking one such hook per tool — each independent
-    — yields AND semantics: every per-tool hook must allow the stop, so
-    all listed tools must have been called this turn.
-    """
-    if not required_tools:
-        return None
-    merged: dict[str, list] = {"Stop": []}
-    for name in required_tools:
-        merged["Stop"].extend(require_tool_call_stop_hook([name])["Stop"])
-    return merged
-
-
 def _make_agent(
     name: str,
     system_prompt: str,
+    runtime: AgentRuntimeConfig,
     tools: list | None = None,
     required_tools: list[str] | None = None,
-    backend_kind: str = "claude-code",
-    model: str = CLAUDE_CODE_DEFAULT_MODEL,
     session_mode: str = "persistent",
 ) -> AgentLayer:
-    hooks = _compose_required_tools_hooks(required_tools or [])
     return AgentLayer(
         AgentLayerConfig(
             name=name,
             system_prompt=system_prompt,
             backend=BackendConfig(
-                kind=backend_kind,
-                model=model,
+                kind=runtime.backend,
+                model=runtime.model,
+                reasoning_effort=runtime.reasoning_effort,
                 tools=tools,
-                hooks=hooks,
+                extra_mcp_servers=runtime.extra_mcp_servers,
             ),
             session=SessionConfig(mode=session_mode),
+            required_tools=tuple(required_tools or ()),
         )
     )
 
@@ -250,33 +234,11 @@ class PerfAnalyzeWorkflow:
         self._progress_ctx = ProgressContext(path=self.progress_path)
         progress_tools = build_progress_tools(self._progress_ctx)
 
-        self.benchmarker = _make_agent(
-            "benchmarker",
-            self.prompts.benchmarker,
-            progress_tools["benchmarker"],
-            required_tools=["append_benchmarker_progress"],
-        )
-        # Constructed unconditionally (the stage gate lives in ``run``);
-        # the backend client is lazy, so a skipped projector costs nothing.
-        self.projector = _make_agent(
-            "projector",
-            self.prompts.projector,
-            progress_tools["projector"],
-            required_tools=["append_projector_progress"],
-        )
-        self.analyzer = _make_agent(
-            "analyzer",
-            self.prompts.analyzer,
-            progress_tools["analyzer"],
-            required_tools=["append_analyzer_progress"],
-        )
-        self.reporter = _make_agent(
-            "reporter",
-            self.prompts.reporter,
-            progress_tools["reporter"],
-            required_tools=["append_reporter_progress"],
-        )
         self._progress_tools = progress_tools
+        self.benchmarker: AgentLayer | None = None
+        self.projector: AgentLayer | None = None
+        self.analyzer: AgentLayer | None = None
+        self.reporter: AgentLayer | None = None
 
     def __enter__(self) -> "PerfAnalyzeWorkflow":
         return self
@@ -286,7 +248,33 @@ class PerfAnalyzeWorkflow:
 
     def close(self) -> None:
         for layer in (self.benchmarker, self.projector, self.analyzer, self.reporter):
-            layer.__exit__(None, None, None)
+            if layer is not None:
+                layer.__exit__(None, None, None)
+
+    def _configure_agents(self) -> None:
+        task_data = self._task_data()
+
+        def runtime(role: str) -> AgentRuntimeConfig:
+            return resolve_agent_runtime(
+                task_data,
+                role,
+                legacy_backend="claude-code",
+                legacy_model=CLAUDE_CODE_DEFAULT_MODEL,
+            )
+
+        for role in ("benchmarker", "projector", "analyzer", "reporter"):
+            if getattr(self, role) is None:
+                setattr(
+                    self,
+                    role,
+                    _make_agent(
+                        role,
+                        getattr(self.prompts, role),
+                        runtime(role),
+                        self._progress_tools[role],
+                        required_tools=[f"append_{role}_progress"],
+                    ),
+                )
 
     # ------------------------------------------------------------- orchestration
 
@@ -296,6 +284,7 @@ class PerfAnalyzeWorkflow:
         state = self._init_state(task, log)
         if state is None:
             return
+        self._configure_agents()
 
         try:
             # Each stage checkpoints before advancing, so a crash / Ctrl-C
