@@ -43,6 +43,49 @@ from .types import (
 PromptBuilder = Callable[[str], AgentRequest]
 
 
+def _add_usage(first: UsageInfo | None, second: UsageInfo | None) -> UsageInfo | None:
+    """Add two per-send usage records, retaining the newest context snapshot."""
+    if first is None:
+        return second
+    if second is None:
+        return first
+
+    def add(name: str):
+        left = getattr(first, name)
+        right = getattr(second, name)
+        if left is None:
+            return right
+        if right is None:
+            return left
+        return left + right
+
+    return UsageInfo(
+        input_tokens=add("input_tokens"),
+        output_tokens=add("output_tokens"),
+        cache_creation_tokens=add("cache_creation_tokens"),
+        cache_read_tokens=add("cache_read_tokens"),
+        total_tokens=add("total_tokens"),
+        cost_usd=add("cost_usd"),
+        num_turns=add("num_turns"),
+        duration_ms=add("duration_ms"),
+        context_tokens=(
+            second.context_tokens if second.context_tokens is not None else first.context_tokens
+        ),
+        context_window=(
+            second.context_window if second.context_window is not None else first.context_window
+        ),
+        context_percentage=(
+            second.context_percentage
+            if second.context_percentage is not None
+            else first.context_percentage
+        ),
+    )
+
+
+def _required_tool_was_called(required: str, called: set[str]) -> bool:
+    return any(name == required or name.endswith(f"__{required}") for name in called)
+
+
 def _read_stdin(prompt: str = "> ") -> str:
     """Indirection so tests can monkeypatch the blocking stdin read."""
     return input(prompt)
@@ -360,10 +403,11 @@ class AgentLayer(Module):
         client: BackendClient,
         request: AgentRequest,
         logger: Logger,
-    ) -> AgentResponse:
+    ) -> tuple[AgentResponse, set[str]]:
         sink = logger.console
         result_text = ""
         usage: UsageInfo | None = None
+        called_tools: set[str] = set()
 
         def observe(kind: str, event: Any) -> None:
             """Forward one event to the config's observer, if any.
@@ -385,6 +429,7 @@ class AgentLayer(Module):
                 result_text = event.text
                 usage = event.usage
             elif isinstance(event, ToolCallEvent):
+                called_tools.add(event.name)
                 observe("tool", event)
                 if self.config.print_activity:
                     print_tool_call(self.layer_name, event, sink)
@@ -415,10 +460,13 @@ class AgentLayer(Module):
             else:
                 raise TypeError(f"Unexpected backend event: {type(event).__name__}")
 
-        return AgentResponse(
-            content=result_text,
-            metadata=dict(request.metadata),
-            usage=usage,
+        return (
+            AgentResponse(
+                content=result_text,
+                metadata=dict(request.metadata),
+                usage=usage,
+            ),
+            called_tools,
         )
 
     async def _run_with_client(
@@ -452,7 +500,37 @@ class AgentLayer(Module):
             print_user_prompt(self.layer_name, request.content, sink)
 
         try:
-            response = await self._execute(client, request, logger)
+            response, called_tools = await self._execute(client, request, logger)
+            missing = [
+                name
+                for name in self.config.required_tools
+                if not _required_tool_was_called(name, called_tools)
+            ]
+            if missing:
+                continuation = (
+                    "Before finishing, call each of these required workflow tools exactly as "
+                    f"instructed: {', '.join(missing)}. Do not skip the calls."
+                )
+                if self.config.print_activity:
+                    print_user_prompt(self.layer_name, continuation, sink)
+                retry, retry_tools = await self._execute(
+                    client,
+                    AgentRequest(content=continuation, metadata=dict(request.metadata)),
+                    logger,
+                )
+                called_tools.update(retry_tools)
+                still_missing = [
+                    name
+                    for name in self.config.required_tools
+                    if not _required_tool_was_called(name, called_tools)
+                ]
+                if still_missing:
+                    raise RuntimeError(
+                        f"{self.layer_name} finished without required tool call(s) "
+                        f"after one continuation: {', '.join(still_missing)}"
+                    )
+                retry.usage = _add_usage(response.usage, retry.usage)
+                response = retry
         except Exception as exc:
             if self.config.print_activity:
                 print_agent_failed(self.layer_name, exc, sink)

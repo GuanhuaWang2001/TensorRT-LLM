@@ -4,6 +4,7 @@ from dataclasses import replace
 from unittest.mock import patch
 
 import anyio
+import pytest
 
 from agent_flow import (
     AgentLayer,
@@ -86,6 +87,66 @@ def test_one_forward_performs_one_backend_send_and_appends_response():
     assert backend.create_client_calls == 1
     assert backend.clients[0].send_count == 1
     assert result == "done"
+
+
+def test_required_tools_retry_once_and_aggregate_usage():
+    first_usage = UsageInfo(input_tokens=10, output_tokens=2, total_tokens=12, num_turns=1)
+    retry_usage = UsageInfo(
+        input_tokens=5,
+        output_tokens=3,
+        total_tokens=8,
+        num_turns=1,
+        context_tokens=20,
+    )
+    backend = FakeBackend(
+        [
+            {
+                "turns": [
+                    {"text": "premature", "usage": first_usage},
+                    {
+                        "text": "final",
+                        "usage": retry_usage,
+                        "tool_calls": [
+                            ToolCallEvent(
+                                name="mcp__agent-tools__update_status",
+                                input={},
+                            )
+                        ],
+                    },
+                ]
+            }
+        ]
+    )
+    config = replace(_config(), required_tools=("update_status",))
+    layer = AgentLayer(config)
+
+    with (
+        patch("agent_flow.layers.create_backend", return_value=backend),
+        patch("agent_flow.layers.print_agent_completed") as completed,
+    ):
+        result = layer("run")
+
+    assert result == "final"
+    assert backend.clients[0].send_count == 2
+    assert "update_status" in backend.clients[0].messages[1]
+    usage = completed.call_args.args[2]
+    assert (usage.input_tokens, usage.output_tokens, usage.total_tokens) == (15, 5, 20)
+    assert usage.num_turns == 2
+    assert usage.context_tokens == 20
+
+
+def test_required_tools_fail_after_one_bounded_continuation():
+    backend = FakeBackend([{"turns": [{"text": "one"}, {"text": "two"}]}])
+    config = replace(_config(print_activity=False), required_tools=("update_status",))
+    layer = AgentLayer(config)
+
+    with (
+        patch("agent_flow.layers.create_backend", return_value=backend),
+        pytest.raises(RuntimeError, match="update_status"),
+    ):
+        layer("run")
+
+    assert backend.clients[0].send_count == 2
 
 
 def test_layer_prints_live_agent_activity(capsys):

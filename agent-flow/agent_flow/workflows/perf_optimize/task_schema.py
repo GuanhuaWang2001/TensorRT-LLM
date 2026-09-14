@@ -59,6 +59,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Mapping
 
+from agent_flow.agent_runtime import AGENTS_FIELD, validate_agents
 from agent_flow.workflows.perf_analyze.task_schema import (
     EXTRA_LLM_API_OPTIONS_FIELD,
     REMOTE_RUN_ROOT_FIELD,
@@ -139,6 +140,22 @@ VALID_METRICS: frozenset[str] = frozenset(
         for kind in ("ttft", "tpot", "itl", "e2el")
     }
 )
+
+AGENT_ROLES: tuple[str, ...] = (
+    "benchmarker",
+    "projector",
+    "analyzer",
+    "optimizer",
+    "evaluator",
+    "integrator",
+    "qa",
+    "reporter",
+)
+
+# Top-level keys owned specifically by perf-optimize. The base schema preserves
+# unknown keys; this census lets external lint distinguish this deliberate
+# extension without teaching perf-analyze about optimizer roles.
+KNOWN_TOP_LEVEL_KEYS: frozenset[str] = frozenset({AGENTS_FIELD})
 
 # The perf-optimize half of the key census the base schema documents. Same
 # contract: this is what a lint may call real, not what the validator rejects.
@@ -423,7 +440,7 @@ def load_and_validate_task_yaml(
     """
     data = _base_load_and_validate(path)
 
-    errors: list[str] = []
+    errors: list[str] = validate_agents(data, known_roles=AGENT_ROLES)
     # Disagg first: the harness config is the source of truth for the
     # measurement conditions, so the backfill has to land before the
     # blocks that are validated against them (focus_concurrencies against
@@ -536,6 +553,7 @@ __all__ = [
     "KNOWN_ACCURACY_KEYS",
     "KNOWN_KERNEL_COVERAGE_KEYS",
     "KNOWN_OPTIMIZE_KEYS",
+    "KNOWN_TOP_LEVEL_KEYS",
     "ITEM_EXECUTIONS",
     "OPTIMIZE_DEFAULTS",
     "REMOTE_RUN_ROOT_FIELD",
