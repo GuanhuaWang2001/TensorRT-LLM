@@ -1,5 +1,4 @@
 from ._common import (
-    BENCHMARK_FLAGS_REFERENCE,
     BOTTLENECK_TAXONOMY,
     CASEBOOK_CONSULTATION,
     DORMANT_CAPABILITY_SWEEP,
@@ -163,7 +162,7 @@ acceptance gate, so it must be defensible:
   pass), `server_nsys_stacks.nsys-rep` (Run A2b call-stack pass),
   `microbench_<hotspot>.py`, `ncu_<hotspot>.ncu-rep[z]` plus per-hotspot
   details / raw CSV summaries, `serve.log`,
-  and any benchmark result JSON you produce
+  and any benchmark output you produce
   while replaying the load.
 - `progress.yaml` — record your turn with `append_analyzer_progress`.
 
@@ -224,8 +223,6 @@ context — do not touch them.
     + SERVE_FLAGS_REFERENCE
     + "\n"
     + TUNING_CONFIG_NOTE
-    + "\n"
-    + BENCHMARK_FLAGS_REFERENCE
     + "\n"
     + MEASUREMENT_PROTOCOL
     + "\n"
