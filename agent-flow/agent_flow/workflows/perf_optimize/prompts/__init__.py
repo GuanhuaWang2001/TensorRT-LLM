@@ -3,7 +3,10 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
 from agent_flow.workflows.perf_analyze.prompts import build_remote_execution_context
-from agent_flow.workflows.perf_analyze.prompts._common import CASEBOOK_DISABLED
+from agent_flow.workflows.perf_analyze.prompts._common import (
+    CASEBOOK_DISABLED,
+    benchmark_driver_prompt,
+)
 
 from ._common import (
     DISAGG_CAMPAIGN,
@@ -82,7 +85,7 @@ class PromptBundle:
         )
 
 
-DEFAULT_PROMPTS = PromptBundle(
+BASE_PROMPTS = PromptBundle(
     benchmarker=BENCHMARKER_SYSTEM_PROMPT,
     projector=PROJECTOR_SYSTEM_PROMPT,
     analyzer=ANALYZER_SYSTEM_PROMPT,
@@ -100,6 +103,13 @@ DEFAULT_PROMPTS = PromptBundle(
     integrator=NATIVE_RUNTIME_REUSE,
     qa=NATIVE_RUNTIME_REUSE,
     reporter=NATIVE_RUNTIME_REUSE,
+)
+DEFAULT_PROMPTS = BASE_PROMPTS.with_extensions(
+    benchmarker=benchmark_driver_prompt(None),
+    analyzer=benchmark_driver_prompt(None),
+    evaluator=benchmark_driver_prompt(None),
+    integrator=benchmark_driver_prompt(None),
+    qa=benchmark_driver_prompt(None),
 )
 
 
@@ -124,9 +134,10 @@ def build_perf_optimize_prompts(
     the login node and records the latency constants as unmeasured, per
     its own prompt).
 
-    ``remote_execution`` is the resolved task spec. When it names an SSH
-    target, a short remote boundary plus its task-specific connection and
-    Slurm values is appended to every role that may touch runtime data.
+    ``remote_execution`` is the resolved task spec. Its ``benchmark.type``
+    selects the builtin or external benchmark fragment. When it names an
+    SSH target, a short remote boundary plus its task-specific connection
+    and Slurm values is appended to every role that may touch runtime data.
 
     When ``approaches`` (``optimize.approaches`` from the task spec)
     restricts the run to a subset of the roadmap's approach values, the
@@ -187,7 +198,14 @@ def build_perf_optimize_prompts(
     deployment-time fact into a per-turn inference the agent can get
     wrong.
     """
-    bundle = DEFAULT_PROMPTS
+    benchmark_prompt = benchmark_driver_prompt(remote_execution)
+    bundle = BASE_PROMPTS.with_extensions(
+        benchmarker=benchmark_prompt,
+        analyzer=benchmark_prompt,
+        evaluator=benchmark_prompt,
+        integrator=benchmark_prompt,
+        qa=benchmark_prompt,
+    )
     if not include_casebook:
         bundle = bundle.with_extensions(
             benchmarker=CASEBOOK_DISABLED,
@@ -250,6 +268,7 @@ def build_perf_optimize_prompts(
 
 __all__ = [
     "ANALYZER_SYSTEM_PROMPT",
+    "BASE_PROMPTS",
     "BENCHMARKER_SYSTEM_PROMPT",
     "DEFAULT_PROMPTS",
     "EVALUATOR_SYSTEM_PROMPT",
