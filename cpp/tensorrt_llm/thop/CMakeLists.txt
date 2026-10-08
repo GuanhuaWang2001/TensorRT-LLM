@@ -155,8 +155,11 @@ add_th_common_family(
   mhcOp.cpp
   compressorOp.cpp)
 
+add_subdirectory(../kernels/tinygemm2 ${CMAKE_CURRENT_BINARY_DIR}/tinygemm2)
+
 add_library(
   th_common SHARED
+  $<TARGET_OBJECTS:tinygemm2_src>
   $<TARGET_OBJECTS:th_common_attention>
   $<TARGET_OBJECTS:th_common_gemm_quant>
   $<TARGET_OBJECTS:th_common_moe>

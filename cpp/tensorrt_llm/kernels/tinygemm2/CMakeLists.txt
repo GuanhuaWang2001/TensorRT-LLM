@@ -1,6 +1,6 @@
 #
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES.
-# All rights reserved. SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION &
+# AFFILIATES. All rights reserved. SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may not
 # use this file except in compliance with the License. You may obtain a copy of
@@ -18,6 +18,7 @@
 file(GLOB_RECURSE SRC_CPP *.cpp)
 file(GLOB_RECURSE SRC_CU *.cu)
 add_library(tinygemm2_src OBJECT ${SRC_CPP} ${SRC_CU})
+target_link_libraries(tinygemm2_src PRIVATE ${TORCH_LIBRARIES})
 
 target_compile_options(tinygemm2_src
                        PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-maxrregcount=32>)

@@ -74,6 +74,9 @@ list(FILTER SRC_CPP EXCLUDE REGEX "compressorKernels/.*")
 list(FILTER SRC_CU EXCLUDE REGEX "compressorKernels/.*")
 list(FILTER SRC_CPP EXCLUDE REGEX "fusedSampling/.*")
 list(FILTER SRC_CU EXCLUDE REGEX "fusedSampling/.*")
+# TinyGEMM2 uses ATen and is built with the Torch extensions.
+list(FILTER SRC_CPP EXCLUDE REGEX "tinygemm2/.*")
+list(FILTER SRC_CU EXCLUDE REGEX "tinygemm2/.*")
 # Marlin is built as its own architecture-scoped OBJECT library below.
 list(FILTER SRC_CPP EXCLUDE REGEX "marlin/.*")
 list(FILTER SRC_CU EXCLUDE REGEX "marlin/.*")
