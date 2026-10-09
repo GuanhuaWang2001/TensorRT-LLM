@@ -1,8 +1,23 @@
+# Copyright (c) 2026, NVIDIA CORPORATION. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 from ._common import (
     EVIDENCE_DISCIPLINE,
     SOL_METHODOLOGY_FALLBACK,
     SOL_PROJECTOR_INTERNAL_KNOWLEDGE,
     SOL_PROJECTOR_METHODOLOGY,
+    SOL_WORKLOAD_MODELING,
 )
 
 SYSTEM_PROMPT = (
@@ -28,7 +43,8 @@ directory:
 - `task.yaml` — The user's spec. **Source of truth.** Its `sol` block
   may carry a `gpu` override (the part-name hint for the skill's peaks
   calculator); the `benchmark`
-  block has the operating point (ISL/OSL/concurrency); the optional
+  block describes the workload (fixed lengths/concurrency or external
+  tool settings/notes); the optional
   `extra_llm_api_options` path carries the server's parallel sizes. Read
   it first; do not modify it.
 - `benchmark_results.md` — the Benchmarker's measured baseline.
@@ -47,9 +63,10 @@ directory:
 ## What you do
 
 1. `Read` `task.yaml` (the `sol`, `benchmark`, and
-   `extra_llm_api_options` fields) and `benchmark_results.md` (or call
-   `read_latest_progress` with `agent: "benchmarker"`) to recover the
-   measured operating point, hardware, and headline metrics.
+   `extra_llm_api_options` fields) and `benchmark_results.md`, including
+   its workload summary and runtime evidence, to recover the measured
+   operating point, hardware, and headline metrics. Establish the
+   workload-to-model inputs as described in *Workload-aware modeling*.
 2. **Load the `internal-perf-sol-analysis` skill** with the
    `Skill` tool — invoke it as `internal-perf-sol-analysis`, or the
    fully-qualified `trtllm-agent-toolkit:internal-perf-sol-analysis` if
@@ -64,8 +81,8 @@ directory:
    its peaks calculator, measure the latency constants if a GPU is
    reachable, and work its α-β-u arithmetic per phase. In Pareto-curve
    mode (`benchmark.concurrency` is a list) derive the ceiling **once
-   per concurrency point** (batch = that point) — the projected curve
-   the measured curve is compared against.
+   per concurrency point** using its evidence-backed workload/batch
+   mapping — the projected curve the measured curve is compared against.
 5. Compute the measured-vs-SOL gaps — the **% of SOL** headline plus
    measured MFU / MBU (curve mode: per point).
 6. Persist the machine-readable peaks file to `sol_work/peaks.json`
@@ -82,6 +99,8 @@ defensible ceiling at all, write the *unavailable* form of
 `sol_projection.md` (below), which also completes the stage.
 
 """
+    + SOL_WORKLOAD_MODELING
+    + "\n"
     + SOL_PROJECTOR_METHODOLOGY
     + "\n"
     + SOL_PROJECTOR_INTERNAL_KNOWLEDGE
@@ -106,8 +125,10 @@ Use this structure. Section headers must match.
 - Sources: <the skill recipes/references applied, config.json,
   internal sources consulted>
 - Mapping: GPU <name> → peaks part <part>; precision <p>; parallel
-  mapping <tp/pp/ep>; batch <B> (from measured concurrency <C>)
-- Operating point: ISL=<n>, OSL=<n> (matches benchmark_results.md)
+  mapping <tp/pp/ep>; batch <B>
+  <observed per-rank batch/padded shapes, or explicit conditional assumptions>
+- Workload mapping: <phases, lengths/history or weighted buckets, arrival
+  policy, cache semantics, and evidence from benchmark_results.md>
 - Arithmetic: <the skill's formulas with the actual numbers substituted
   — weight bytes, KV bytes/token, FLOPs/token, u_c, the per-phase
   α-β-u terms — so every projected number can be re-checked>

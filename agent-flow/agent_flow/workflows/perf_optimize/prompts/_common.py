@@ -1,3 +1,17 @@
+# Copyright (c) 2026, NVIDIA CORPORATION. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Shared prose blocks for the perf-optimize role prompts.
 
 The serve / benchmark / profiling command knowledge is imported from
@@ -24,6 +38,7 @@ from typing import Sequence
 
 from agent_flow.workflows.perf_analyze.prompts._common import (
     BENCHMARK_FLAGS_REFERENCE,
+    BENCHMARK_WORKLOAD_EVIDENCE,
     BOTTLENECK_TAXONOMY,
     CASEBOOK_CONSULTATION,
     DERIVED_METRICS_REFERENCE,
@@ -39,11 +54,13 @@ from agent_flow.workflows.perf_analyze.prompts._common import (
     SOL_METHODOLOGY_FALLBACK,
     SOL_PROJECTOR_INTERNAL_KNOWLEDGE,
     SOL_PROJECTOR_METHODOLOGY,
+    SOL_WORKLOAD_MODELING,
 )
 from agent_flow.workflows.perf_optimize.roadmap_schema import APPROACHES
 
 __all__ = [
     "BENCHMARK_FLAGS_REFERENCE",
+    "BENCHMARK_WORKLOAD_EVIDENCE",
     "BOTTLENECK_TAXONOMY",
     "CASEBOOK_APPLY",
     "CASEBOOK_CONSULTATION",
@@ -72,6 +89,7 @@ __all__ = [
     "SOL_OPTIMIZE_REPORTER_GUIDANCE",
     "SOL_PROJECTOR_INTERNAL_KNOWLEDGE",
     "SOL_PROJECTOR_METHODOLOGY",
+    "SOL_WORKLOAD_MODELING",
     "TUNING_CONFIG_NOTE",
     "approach_restriction_note",
     "kernel_coverage_analyzer_note",

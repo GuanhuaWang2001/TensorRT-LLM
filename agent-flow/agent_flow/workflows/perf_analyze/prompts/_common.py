@@ -1,3 +1,17 @@
+# Copyright (c) 2026, NVIDIA CORPORATION. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Shared prose blocks for the perf-analyze role prompts.
 
 The exact ``trtllm-serve`` / ``benchmark_serving.py`` / ``nsys`` command
@@ -42,6 +56,74 @@ machinery, and its prompts compose these same fragments.
 
 from pathlib import Path
 from typing import Sequence
+
+BENCHMARK_WORKLOAD_EVIDENCE = """\
+## Workload summary and runtime evidence
+
+In the existing `benchmark_results.md`, add a `## Workload summary and
+runtime evidence` section for the Projector and Analyzer. This applies to
+built-in and external tools alike. Cover the following, per operating
+point when they differ:
+
+- Dataset/tool identity and effective input/output token lengths: fixed
+  values or distributions (including tails), tokenizer, shared prefixes,
+  cache reuse, and multi-turn/session structure where applicable.
+- Load generation: request count, client concurrency, arrival rate or
+  burst/refill policy, streaming, warmup, ramp-up/drain, and measurement
+  window. Distinguish requested settings from completed/observed work.
+- Phase semantics: end-to-end, context-only, or generation-only; real
+  prefill versus synthetic/preallocated historical KV, whether KV transfer
+  is timed, and speculative decoding with measured versus forced acceptance.
+- Runtime mapping: GPU count, TP/PP/EP and attention DP, configured batch
+  and token limits versus observed per-rank scheduled batch/token counts
+  (samples/range/distribution and time window), CUDA-graph padding, and
+  available KV occupancy/cache-hit and queueing evidence. Client concurrency,
+  active requests, scheduled batch, and padded batch are distinct quantities.
+- Metric semantics: units, aggregation, timing boundaries, throughput
+  numerator/denominator and GPU normalization, especially for the target
+  metric. Do not equate whole-run HTTP throughput with steady-state decode.
+
+Cite the exact commands, config, dataset metadata, result files, and log
+locations supporting the summary. Label facts as configured, measured,
+inferred (show the derivation), or unknown; mark inapplicable fields N/A.
+Use artifacts from the normal benchmark run: do not add profiling runs or
+rerun benchmarks solely to fill this section. Missing evidence stays
+unknown, not an invented value. Keep the summary in this report, not a
+new artifact/schema; the progress summary is not a replacement for it.
+"""
+
+SOL_WORKLOAD_MODELING = """\
+## Workload-aware modeling
+
+Before applying the existing SOL methodology, read the benchmark report's
+`Workload summary and runtime evidence` section and its cited evidence,
+alongside `task.yaml`'s benchmark settings/notes and the effective server
+config. The report is required reading; a progress summary alone is not
+enough. For older reports without the section, use their existing evidence
+and explicitly list missing inputs. Do not launch serving or profiling runs
+to recover them.
+
+In the existing `Projection setup`, explain how the workload maps to the
+model: phase(s) actually timed, token lengths/history, cache reuse, arrival
+policy, parallel layout, and per-rank scheduled batch versus padded shapes.
+Never equate client concurrency with GPU batch, or treat max_batch_size as
+the observed batch; dividing concurrency by GPU/TP/EP count is not evidence.
+Respect the actual attention/MoE mapping. For variable-length, multi-turn,
+or dynamic-batch loads, use representative length/history/batch buckets
+supported by the report and explain the weighting appropriate to the metric;
+do not silently substitute mean ISL/OSL for the entire distribution.
+
+Then apply the same SOL formulas to those inputs. Compare only matching
+phases, timing windows, units and aggregation: synthetic-KV generation-only
+is not real prefill or end-to-end serving; a percentile target is not a mean.
+Adapt metric rows to the measured workload; mark unsupported comparisons
+(including TTFT/TPOT when unavailable) N/A rather than inventing values.
+When batch or distribution evidence is missing, give explicitly conditional
+bounds/scenarios and assumptions in `Caveats`, or use the unavailable form
+when no defensible projection is possible. Keep configured, measured and
+inferred inputs distinct. Guidance must cite these assumptions; the Analyzer
+still owns profiling-based optimization decisions.
+"""
 
 # The starting taxonomy the nsys-timeline pipeline classifies kernels with.
 # The skill ships a generic template shaped for *training* frameworks

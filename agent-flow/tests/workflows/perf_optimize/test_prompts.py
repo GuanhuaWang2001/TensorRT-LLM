@@ -1,3 +1,17 @@
+# Copyright (c) 2026, NVIDIA CORPORATION. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Tests that the perf-optimize role prompts carry their contracts.
 
 The measuring roles must drive ``benchmark_serving.py`` / ``nsys`` from
@@ -11,6 +25,13 @@ from __future__ import annotations
 
 import re
 
+import pytest
+
+from agent_flow.workflows.perf_analyze.prompts import build_perf_analyze_prompts
+from agent_flow.workflows.perf_analyze.prompts._common import (
+    BENCHMARK_WORKLOAD_EVIDENCE,
+    SOL_WORKLOAD_MODELING,
+)
 from agent_flow.workflows.perf_analyze.prompts._common import (
     SOL_METHODOLOGY_FALLBACK as _ANALYZE_METHODOLOGY_FALLBACK,
 )
@@ -63,6 +84,48 @@ _MEASURING = ("benchmarker", "analyzer", "evaluator", "qa")
 def _norm(text: str) -> str:
     """Collapse whitespace so substring assertions survive line-wrapping."""
     return re.sub(r"\s+", " ", text)
+
+
+@pytest.mark.parametrize("builder", [build_perf_analyze_prompts, build_perf_optimize_prompts])
+@pytest.mark.parametrize("methodology", ["full", "reduced"])
+def test_workload_evidence_handoff_preserves_sol_methodology(builder, methodology: str) -> None:
+    bundle = builder(sol_methodology=methodology)
+    assert BENCHMARK_WORKLOAD_EVIDENCE in bundle.benchmarker
+    assert SOL_WORKLOAD_MODELING in bundle.projector
+    assert "## Workload summary and runtime evidence" in bundle.benchmarker
+    assert "- Workload mapping:" in bundle.projector
+    assert "benchmark_results.md" in bundle.projector
+    assert "batch = that point" not in bundle.projector
+    assert "from measured concurrency" not in bundle.projector
+    assert "or call `read_latest_progress`" not in _norm(bundle.projector)
+    assert bundle.projector.index(SOL_WORKLOAD_MODELING) < bundle.projector.index(
+        "## The methodology"
+    )
+    assert "sol_work/peaks.json" in bundle.projector
+    assert "append_projector_progress" in bundle.projector
+    assert (SOL_METHODOLOGY_FALLBACK in bundle.projector) == (methodology == "reduced")
+
+
+def test_workload_contract_distinguishes_evidence_from_assumptions() -> None:
+    report = _norm(BENCHMARK_WORKLOAD_EVIDENCE)
+    projection = _norm(SOL_WORKLOAD_MODELING)
+    for feature in (
+        "distributions",
+        "multi-turn",
+        "arrival rate",
+        "synthetic",
+        "per-rank",
+        "CUDA-graph padding",
+        "numerator/denominator",
+    ):
+        assert feature in report
+    assert "configured, measured, inferred" in report
+    assert "do not add profiling runs or rerun benchmarks" in report
+    assert "Never equate client concurrency with GPU batch" in projection
+    assert "representative length/history/batch buckets" in projection
+    assert "conditional bounds/scenarios" in projection
+    assert "For older reports without the section" in projection
+    assert "mark unsupported comparisons" in projection
 
 
 def test_every_role_gets_the_static_wheel_runtime_guidance():

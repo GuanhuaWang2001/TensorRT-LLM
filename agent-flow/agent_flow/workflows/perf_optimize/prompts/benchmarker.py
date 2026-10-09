@@ -1,5 +1,20 @@
+# Copyright (c) 2026, NVIDIA CORPORATION. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 from ._common import (
     BENCHMARK_FLAGS_REFERENCE,
+    BENCHMARK_WORKLOAD_EVIDENCE,
     CASEBOOK_CONSULTATION,
     DERIVED_METRICS_REFERENCE,
     EVIDENCE_DISCIPLINE,
@@ -74,6 +89,8 @@ stages — do not touch them.
     + MEASUREMENT_PROTOCOL
     + "\n"
     + CASEBOOK_CONSULTATION
+    + "\n"
+    + BENCHMARK_WORKLOAD_EVIDENCE
     + """
 ## Required output (`baseline/benchmark_results.md`)
 
@@ -91,6 +108,9 @@ Use this structure. Section headers must match.
 - Benchmark command: `<exact benchmark_serving.py command you ran>`
 - Result JSON: `<filename>` (curve mode: one `concurrency_<c>/<filename>` per point)
 - Target metric (`optimize.target_metric`): <name> = <value>
+
+## Workload summary and runtime evidence
+<The evidence-backed workload summary described above.>
 
 ## Metrics
 | Metric | Value |
